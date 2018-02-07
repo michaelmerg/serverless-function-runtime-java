@@ -1,4 +1,4 @@
-group 'faas.container'
+group 'serverless.function'
 version '1.0-SNAPSHOT'
 
 apply plugin: 'java'
@@ -9,8 +9,20 @@ repositories {
     mavenCentral()
 }
 
+jar {
+    manifest {
+        attributes 'Main-Class': 'serverless.function.ServerlessFunctionRuntime'
+    }
+}
+
 dependencies {
-    compile group: 'com.fasterxml.jackson.core', name: 'jackson-databind', version: '2.9.4'
+    compile group: 'com.google.code.gson', name: 'gson', version: '2.8.2'
 
     testCompile group: 'junit', name: 'junit', version: '4.12'
 }
+
+task copyToLib(type: Copy) {
+    into "$buildDir/libs"
+    from configurations.runtime
+}
+build.dependsOn(copyToLib)
