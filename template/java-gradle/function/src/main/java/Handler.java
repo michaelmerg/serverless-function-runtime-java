@@ -2,8 +2,7 @@ import serverless.function.Context;
 
 import java.util.Map;
 
-public class EchoFunc {
-
+public class Handler {
 
     public static class Input {
         public String name;
