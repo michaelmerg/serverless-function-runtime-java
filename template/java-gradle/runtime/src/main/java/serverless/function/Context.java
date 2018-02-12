@@ -11,8 +11,9 @@ public class Context {
     private final String callId;
     private int responseCode = 200;
     private final Map<String, List<String>> responseHeaders = new HashMap<>();
+    private int responseLength = 0;
 
-    public Context(String functionName, String functionVersion, String callId) {
+    protected Context(String functionName, String functionVersion, String callId) {
         this.functionName = functionName;
         this.functionVersion = functionVersion;
         this.callId = callId;
@@ -44,6 +45,14 @@ public class Context {
 
     public Map<String, List<String>> getResponseHeaders() {
         return responseHeaders;
+    }
+
+    public int getResponseLength() {
+        return responseLength;
+    }
+
+    public void setResponseLength(int responseLength) {
+        this.responseLength = responseLength;
     }
 
     // int getRemainingTimeInMillis();
