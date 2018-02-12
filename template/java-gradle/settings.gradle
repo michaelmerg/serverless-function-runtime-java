@@ -1,0 +1,4 @@
+rootProject.name = 'serverless-function-java-runtime'
+
+include 'runtime'
+include 'function'
