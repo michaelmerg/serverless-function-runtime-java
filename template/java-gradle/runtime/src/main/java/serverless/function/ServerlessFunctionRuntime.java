@@ -5,82 +5,48 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
 import java.io.*;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.net.InetSocketAddress;
-import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.stream.Collectors;
-
-import static java.util.Arrays.stream;
 
 public class ServerlessFunctionRuntime {
 
     private static final String CONTEXT_PATH = "/";
-    private static final int SERVER_STOP_TIMEOUT_SEC = 60;
+    private static final int SERVER_STOP_TIMEOUT_SEC = 0;
     private static final int HTTP_THREAD_POOL_SIZE = 25;
-    private static final String HANDLER_METHOD_SEPARATOR = "::";
-    private static final String DEFAULT_HANDLER_METHOD_NAME = "handle";
 
-    private static final Gson GSON = new Gson();
     private static final Logger LOG = StdOutLogger.getLogger(null);
 
     private Config config;
-    private String handlerClassName;
-    private String handlerMethodName;
     private HttpServer server;
-
-    private Object handler;
-    private Method handlerMethod;
     private ExecutorService httpThreadPool;
 
-    ServerlessFunctionRuntime() {
+    private HandlerInvoker invoker;
 
-        loadConfig();
+    ServerlessFunctionRuntime(Config config) {
+        this.config = config;
         initialize();
     }
 
     public static void main(String[] args) {
-        ServerlessFunctionRuntime runtime = new ServerlessFunctionRuntime();
+        Config config = ConfigLoader.loadConfig("./function.json");
+        ServerlessFunctionRuntime runtime = new ServerlessFunctionRuntime(config);
         Runtime.getRuntime().addShutdownHook(new Thread(runtime::stop));
         runtime.start();
     }
 
-    private void loadConfig() {
-        InputStream configFile = this.getClass().getClassLoader().getResourceAsStream("./function/function.json");
-        try {
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(configFile))) {
-                this.config = GSON.fromJson(reader, Config.class);
-            }
-        } catch (IOException e) {
-            throw new ServerlessFunctionException("Error reading config.", e);
-        }
-    }
-
     private void initialize() {
-        String handlerName = config.getHandlerName();
-
-        int separatorIndex = handlerName.lastIndexOf(HANDLER_METHOD_SEPARATOR);
-        if (separatorIndex != -1) {
-            this.handlerClassName = handlerName.substring(0, separatorIndex);
-            this.handlerMethodName = handlerName.substring(separatorIndex + HANDLER_METHOD_SEPARATOR.length());
-        } else {
-            this.handlerClassName = handlerName;
-            this.handlerMethodName = DEFAULT_HANDLER_METHOD_NAME;
-        }
-
-        this.handler = makeHandlerInstance();
-        this.handlerMethod = findHandlerMethod();
+        Object handler = makeHandlerInstance();
+        this.invoker = makeHandlerInvoker(handler);
     }
-
 
     private Object makeHandlerInstance() {
         Class<?> handlerClass;
         try {
-            handlerClass = Class.forName(handlerClassName);
+            handlerClass = Class.forName(this.config.getHandlerName());
         } catch (ClassNotFoundException e) {
-            throw new ServerlessFunctionException("Could not find handler class '" + handlerClassName + "'.", e);
+            throw new ServerlessFunctionException(
+                    "Could not find handler class '" + this.config.getHandlerName() + "'.", e);
         }
 
         try {
@@ -92,21 +58,14 @@ public class ServerlessFunctionRuntime {
         }
     }
 
-    private Method findHandlerMethod() {
-
-        Optional<Method> method = stream(handler.getClass().getDeclaredMethods())
-                .filter(m -> (
-                        m.getName().equals(handlerMethodName) &&
-                                m.getParameterCount() == 2 &&
-                                Context.class.equals(m.getParameterTypes()[1])
-                ))
-                .findFirst();
-
-        if (method.isPresent()) {
-            return method.get();
+    private HandlerInvoker makeHandlerInvoker(Object handler) {
+        if (handler instanceof RequestHandler) {
+            return new RequestHandlerInvoker((RequestHandler) handler);
+        } else if (handler instanceof StreamingRequestHandler) {
+            return new StreamingRequestHandlerInvoker((StreamingRequestHandler) handler);
         } else {
-            throw new ServerlessFunctionException(
-                    "Could not find handler method '" + handlerMethodName + "(Object input, Context context)'.");
+            throw new ServerlessFunctionException("Handler must implement either " + RequestHandler.class.getName()
+                    + " or " + StreamingRequestHandler.class.getName());
         }
     }
 
@@ -135,27 +94,26 @@ public class ServerlessFunctionRuntime {
     }
 
     private void processHttpRequest(HttpExchange httpExchange) {
-        InputStream requestBody = httpExchange.getRequestBody();
         Context context = makeContext(httpExchange);
-        String output = "";
-        int responseStatus = 200;
         try {
-            Object inputObject = convertInput(requestBody);
-            Object outputObject = invokeHandler(inputObject, context);
-            output = convertOutput(outputObject);
-
-            responseStatus = context.getResponseCode();
-            httpExchange.getResponseHeaders().putAll(context.getResponseHeaders());
+            this.invoker.invokeHandler(httpExchange, context);
 
         } catch (RequestProcessingException e) {
             StringWriter writer = new StringWriter();
             e.printStackTrace(new PrintWriter(writer));
-            output = writer.toString();
-            responseStatus = 500;
+            sendErrorResponse(httpExchange, writer.toString());
         } catch (Exception t) {
             LOG.err("Unhandled error handling request.", t);
         } finally {
-            sendResponse(httpExchange, responseStatus, output);
+            closeResponse(httpExchange);
+        }
+    }
+
+    private void closeResponse(HttpExchange httpExchange) {
+        try {
+            httpExchange.getResponseBody().close();
+        } catch (IOException e) {
+            LOG.err("Error closing response.", e);
         }
     }
 
@@ -164,60 +122,15 @@ public class ServerlessFunctionRuntime {
         return new Context(config.getName(), config.getVersion(), callId);
     }
 
-    private Object convertInput(InputStream input) {
-
-        if (input == null) {
-            return null;
-        }
-
-        Class<?> inputClass = this.handlerMethod.getParameterTypes()[0];
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(input))) {
-
-            if (String.class.equals(inputClass)) {
-                return reader.lines().collect(Collectors.joining("\n"));
-            } else {
-                return GSON.fromJson(reader, inputClass);
-            }
-        } catch (IOException e) {
-            throw new RequestProcessingException("Error closing input stream", e);
-        } catch (Exception e) {
-            throw new RequestProcessingException("Error converting input", e);
-        }
-    }
-
-    private Object invokeHandler(Object input, Context context) {
-        try {
-            return handlerMethod.invoke(handler, input, context);
-        } catch (IllegalAccessException e) {
-            throw new RequestProcessingException("Handler method is inaccessible. Set modifier to 'public'.", e);
-        } catch (InvocationTargetException e) {
-            throw new RequestProcessingException("Unhandled exception thrown in handler.", e);
-        }
-    }
-
-    private String convertOutput(Object output) {
-
-        if (output == null) {
-            return "";
-        }
-
-        if (String.class.isInstance(output)) {
-            return (String) output;
-        }
-
-        return GSON.toJson(output);
-    }
-
-    private void sendResponse(HttpExchange httpExchange, int responseStatus, String output) {
+    private void sendErrorResponse(HttpExchange httpExchange, String output) {
 
         try {
-            httpExchange.sendResponseHeaders(responseStatus, output.length());
+            httpExchange.sendResponseHeaders(500, output.length());
 
             OutputStream responseBody = httpExchange.getResponseBody();
             responseBody.write(output.getBytes());
-            responseBody.close();
         } catch (IOException e) {
-            LOG.err("Error sending response.", e);
+            LOG.err("Error sending error response.", e);
         }
     }
 }
