@@ -2,8 +2,9 @@ package serverless.function;
 
 public class Config {
 
-    public static final int DEFAULT_RUNTIME_PORT = 8080;
+    private static final int DEFAULT_RUNTIME_PORT = 8080;
 
+    private String name;
     private String version;
     private String handlerName;
     private int runtimePort = DEFAULT_RUNTIME_PORT;
@@ -16,8 +17,6 @@ public class Config {
     public void setName(String name) {
         this.name = name;
     }
-
-    private String name;
 
     public String getVersion() {
         return version;

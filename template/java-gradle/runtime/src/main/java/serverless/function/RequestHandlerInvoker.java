@@ -19,7 +19,7 @@ public class RequestHandlerInvoker implements HandlerInvoker {
 
     private RequestHandler handler;
 
-    public RequestHandlerInvoker(RequestHandler handler) {
+    RequestHandlerInvoker(RequestHandler handler) {
         this.handler = handler;
         this.inputClass = obtainInputClass(handler);
     }
@@ -38,6 +38,7 @@ public class RequestHandlerInvoker implements HandlerInvoker {
     }
 
     @Override
+    @SuppressWarnings("unchecked")
     public void invokeHandler(HttpExchange httpExchange, Context context) {
         Object inputObject = convertInput(httpExchange.getRequestBody());
         Object outputOpject = this.handler.handle(inputObject, context);
